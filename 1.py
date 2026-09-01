@@ -1,8 +1,7 @@
 import os
 import logging
 import threading
-import time
-import random
+import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update
@@ -35,9 +34,17 @@ if not GEMINI_API_KEY:
 # GEMINI
 # ==================================================
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(
+    api_key=GEMINI_API_KEY
+)
 
-MODEL = "gemini-3.7-flash"
+# Primary + fallback models
+MODELS = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+]
 
 
 # ==================================================
@@ -58,19 +65,32 @@ logger = logging.getLogger(__name__)
 
 def run_server():
 
-    port = int(os.environ.get("PORT", 10000))
+    port = int(
+        os.environ.get("PORT", 10000)
+    )
 
     class Handler(BaseHTTPRequestHandler):
 
         def do_GET(self):
+
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
+
+            self.send_header(
+                "Content-Type",
+                "text/plain"
+            )
+
             self.end_headers()
+
             self.wfile.write(
                 b"IRCE Coaching Bot is running"
             )
 
-        def log_message(self, format, *args):
+        def log_message(
+            self,
+            format,
+            *args
+        ):
             return
 
     server = HTTPServer(
@@ -78,7 +98,9 @@ def run_server():
         Handler
     )
 
-    print(f"Health server running on port {port}")
+    print(
+        f"Health server running on port {port}"
+    )
 
     server.serve_forever()
 
@@ -147,7 +169,30 @@ async def help_command(
 
 
 # ==================================================
-# GEMINI RESPONSE WITH RETRY
+# CHECK TEMPORARY GEMINI ERROR
+# ==================================================
+
+def is_temporary_error(error_text: str) -> bool:
+
+    temporary_errors = (
+        "503",
+        "UNAVAILABLE",
+        "429",
+        "RESOURCE_EXHAUSTED",
+        "500",
+        "INTERNAL",
+        "TIMEOUT",
+        "DEADLINE_EXCEEDED",
+    )
+
+    return any(
+        error in error_text
+        for error in temporary_errors
+    )
+
+
+# ==================================================
+# GEMINI RESPONSE WITH MODEL FALLBACK
 # ==================================================
 
 async def ask_gemini(question: str) -> str:
@@ -195,73 +240,120 @@ IRCE Coaching AI Assistant
         + question
     )
 
-    # 4 attempts
-    for attempt in range(4):
+    # ==================================================
+    # MODEL FALLBACK SYSTEM
+    # ==================================================
 
-        try:
+    for model_index, model in enumerate(MODELS):
 
-            logger.info(
-                "Gemini request attempt %s/4",
-                attempt + 1
-            )
+        logger.info(
+            "Trying Gemini model: %s (%s/%s)",
+            model,
+            model_index + 1,
+            len(MODELS)
+        )
 
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=prompt
-            )
+        # प्रत्येक model को अधिकतम 2 बार try करेंगे
+        for attempt in range(2):
 
-            answer = response.text
-
-            if answer:
-                logger.info("Gemini response received")
-                return answer
-
-            logger.warning(
-                "Gemini returned an empty response"
-            )
-
-        except Exception as e:
-
-            error_text = str(e)
-
-            logger.exception(
-                "Gemini Error on attempt %s/4",
-                attempt + 1
-            )
-
-            # Retry only temporary server/rate-limit errors
-            temporary_error = (
-                "503" in error_text
-                or "UNAVAILABLE" in error_text
-                or "429" in error_text
-                or "RESOURCE_EXHAUSTED" in error_text
-                or "500" in error_text
-                or "INTERNAL" in error_text
-            )
-
-            if not temporary_error:
-                break
-
-            if attempt < 3:
-
-                delay = (2 ** attempt) + random.uniform(
-                    0.5,
-                    1.5
-                )
+            try:
 
                 logger.info(
-                    "Temporary Gemini error. "
-                    "Retrying in %.1f seconds...",
-                    delay
+                    "Gemini request: model=%s attempt=%s/2",
+                    model,
+                    attempt + 1
                 )
 
-                time.sleep(delay)
+                # generate_content synchronous है,
+                # इसलिए इसे अलग thread में चलाते हैं
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=prompt
+                )
+
+                answer = response.text
+
+                if answer:
+
+                    logger.info(
+                        "Gemini response received successfully "
+                        "from model=%s",
+                        model
+                    )
+
+                    return answer.strip()
+
+                logger.warning(
+                    "Gemini returned empty response "
+                    "from model=%s",
+                    model
+                )
+
+            except Exception as e:
+
+                error_text = str(e)
+
+                # पूरा traceback बार-बार print नहीं करेंगे
+                logger.error(
+                    "Gemini error | model=%s | attempt=%s/2 | %s",
+                    model,
+                    attempt + 1,
+                    error_text
+                )
+
+                # Temporary error है तो retry/fallback
+                if is_temporary_error(error_text):
+
+                    if attempt == 0:
+
+                        logger.info(
+                            "Temporary error on %s. "
+                            "Retrying after 2 seconds...",
+                            model
+                        )
+
+                        await asyncio.sleep(2)
+
+                        continue
+
+                    # दूसरा attempt भी fail
+                    # तो अगले model पर जाएंगे
+                    logger.warning(
+                        "Model %s unavailable. "
+                        "Moving to next fallback model.",
+                        model
+                    )
+
+                    break
+
+                else:
+
+                    # Permanent error होने पर
+                    # उसी model को बार-बार try नहीं करेंगे
+                    logger.error(
+                        "Non-temporary error on model=%s. "
+                        "Moving to next model.",
+                        model
+                    )
+
+                    break
+
+    # ==================================================
+    # ALL MODELS FAILED
+    # ==================================================
+
+    logger.error(
+        "All Gemini fallback models failed."
+    )
 
     return (
-        "⚠️ अभी Gemini AI सेवा व्यस्त है।\n\n"
-        "मैंने दोबारा प्रयास किया लेकिन अभी उत्तर "
-        "नहीं मिल पाया। कृपया कुछ सेकंड बाद "
-        "वही सवाल फिर से भेजें।"
+        "⚠️ अभी AI सेवा बहुत व्यस्त है।\n\n"
+        "मैंने उपलब्ध Gemini models पर "
+        "दोबारा प्रयास किया, लेकिन अभी उत्तर "
+        "नहीं मिल पाया।\n\n"
+        "कृपया 10–20 सेकंड बाद वही सवाल "
+        "फिर से भेजें।"
     )
 
 
@@ -283,13 +375,18 @@ async def handle_message(
         return
 
     try:
+
         await update.message.chat.send_action(
             "typing"
         )
+
     except Exception:
+
         pass
 
-    answer = await ask_gemini(question)
+    answer = await ask_gemini(
+        question
+    )
 
     # Telegram message limit
     max_length = 4000
@@ -334,9 +431,17 @@ async def error_handler(
 
 def main():
 
-    print("======================================")
-    print("IRCE Coaching Bot Starting...")
-    print("======================================")
+    print(
+        "======================================"
+    )
+
+    print(
+        "IRCE Coaching Bot Starting..."
+    )
+
+    print(
+        "======================================"
+    )
 
     # Render health server
     threading.Thread(
@@ -375,9 +480,17 @@ def main():
         error_handler
     )
 
-    print("======================================")
-    print("IRCE Coaching Bot is LIVE")
-    print("======================================")
+    print(
+        "======================================"
+    )
+
+    print(
+        "IRCE Coaching Bot is LIVE"
+    )
+
+    print(
+        "======================================"
+    )
 
     application.run_polling(
         drop_pending_updates=True
@@ -389,4 +502,5 @@ def main():
 # ==================================================
 
 if __name__ == "__main__":
+
     main()
