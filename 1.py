@@ -11,7 +11,7 @@ from telegram.ext import (
 from google import genai
 
 # =========================
-# IRC COACHING BOT
+# IRCE COACHING BOT
 # =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = (
-        "🎓 *IRC Coaching में आपका स्वागत है!*\n\n"
+        "🎓 *IRCE Coaching में आपका स्वागत है!*\n\n"
         "मैं आपका AI Study Assistant हूँ।\n\n"
         "📚 आप सीधे अपना सवाल लिख सकते हैं।\n"
         "किसी `/study` या keyword की जरूरत नहीं है।\n\n"
@@ -69,7 +69,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📖 *IRC Coaching Help*\n\n"
+        "📖 *IRCE Coaching Help*\n\n"
         "बस अपना पढ़ाई से जुड़ा सवाल सीधे लिखें।\n\n"
         "आप पूछ सकते हैं:\n"
         "📚 History\n"
@@ -94,7 +94,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_gemini(question: str) -> str:
 
     system_prompt = """
-आप IRC Coaching के AI Study Assistant हैं।
+आप IRCE Coaching के AI Study Assistant हैं।
 
 आपका मुख्य उद्देश्य विद्यार्थियों को पढ़ाई में मदद करना है।
 
@@ -124,7 +124,7 @@ async def ask_gemini(question: str) -> str:
 13. उत्तर पढ़ाई के उद्देश्य से उपयोगी और साफ रखें।
 
 आपका नाम:
-IRC Coaching AI Assistant
+IRCE Coaching AI Assistant
 """
 
     prompt = system_prompt + "\n\nविद्यार्थी का प्रश्न:\n" + question
@@ -205,7 +205,7 @@ async def error_handler(
 def main():
 
     print("===================================")
-    print("IRC Coaching Bot Starting...")
+    print("IRCE Coaching Bot Starting...")
     print("===================================")
 
     application = (
@@ -231,7 +231,7 @@ def main():
 
     application.add_error_handler(error_handler)
 
-    print("IRC Coaching Bot is running...")
+    print("IRCE Coaching Bot is running...")
 
     application.run_polling()
 
