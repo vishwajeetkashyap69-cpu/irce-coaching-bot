@@ -1,6 +1,8 @@
 import os
 import logging
 import threading
+import time
+import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update
@@ -82,7 +84,7 @@ def run_server():
 
 
 # ==================================================
-# START COMMAND
+# START
 # ==================================================
 
 async def start(
@@ -92,14 +94,9 @@ async def start(
 
     message = (
         "🎓 *IRCE Coaching में आपका स्वागत है!*\n\n"
-
         "🤖 मैं आपका AI Study Assistant हूँ।\n\n"
-
-        "📚 आपको कोई special keyword या `/study` "
-        "लिखने की जरूरत नहीं है।\n\n"
-
+        "📚 किसी `/study` या keyword की जरूरत नहीं है।\n\n"
         "✍️ बस अपना सवाल सीधे लिखिए।\n\n"
-
         "उदाहरण:\n"
         "• भारत की राजधानी क्या है?\n"
         "• 1857 की क्रांति समझाइए।\n"
@@ -107,7 +104,6 @@ async def start(
         "• संविधान की प्रस्तावना समझाइए।\n"
         "• 20 Science MCQ बनाओ।\n"
         "• इस सवाल को आसान तरीके से solve करो।\n\n"
-
         "🎯 *IRCE Coaching AI Assistant*"
     )
 
@@ -128,10 +124,8 @@ async def help_command(
 
     message = (
         "📖 *IRCE Coaching Help*\n\n"
-
         "बस अपना सवाल सीधे लिखें।\n"
         "किसी command की जरूरत नहीं है।\n\n"
-
         "📚 History\n"
         "🌍 Geography\n"
         "🏛️ Political Science\n"
@@ -142,7 +136,6 @@ async def help_command(
         "🧠 Reasoning\n"
         "🌐 GK\n"
         "🎯 Competitive Exams\n\n"
-
         "आप notes, MCQ, explanation और "
         "question solving भी मांग सकते हैं।"
     )
@@ -154,7 +147,7 @@ async def help_command(
 
 
 # ==================================================
-# GEMINI
+# GEMINI RESPONSE WITH RETRY
 # ==================================================
 
 async def ask_gemini(question: str) -> str:
@@ -167,44 +160,29 @@ async def ask_gemini(question: str) -> str:
 नियम:
 
 1. उत्तर मुख्य रूप से हिंदी में दें।
-
 2. विद्यार्थी जिस भाषा में प्रश्न पूछे,
    उसी भाषा में उत्तर दें।
-
-3. कठिन विषयों को आसान भाषा में समझाएं।
-
+3. कठिन विषय को आसान भाषा में समझाएं।
 4. जरूरत होने पर उदाहरण दें।
-
 5. History, Geography, Political Science,
    Economics, Science, Mathematics,
    English, GK और Competitive Exams
    के प्रश्नों में व्यवस्थित उत्तर दें।
-
 6. यदि विद्यार्थी कक्षा बताता है,
    तो उसी कक्षा के स्तर के अनुसार समझाएं।
-
 7. Notes मांगने पर व्यवस्थित notes दें।
-
 8. MCQ मांगने पर प्रश्न और options दें।
-
 9. Question solve करने को कहा जाए तो
    step-by-step समाधान दें।
-
 10. अगर विद्यार्थी कहे "आसान तरीके से समझाओ",
     तो बहुत सरल भाषा का प्रयोग करें।
-
-11. महत्वपूर्ण परीक्षा बिंदुओं को
-    अलग से बताएं।
-
+11. महत्वपूर्ण परीक्षा बिंदुओं को अलग से बताएं।
 12. बिना जरूरत बहुत लंबा उत्तर न दें।
-
 13. गलत जानकारी को तथ्य के रूप में प्रस्तुत न करें।
-
 14. विद्यार्थी को पढ़ाई के उद्देश्य से
     उपयोगी और साफ उत्तर दें।
-
-15. विद्यार्थी को `/study` या किसी
-    keyword की जरूरत नहीं है।
+15. विद्यार्थी को /study या किसी keyword
+    की जरूरत नहीं है।
 
 आपका नाम:
 
@@ -217,36 +195,78 @@ IRCE Coaching AI Assistant
         + question
     )
 
-    try:
+    # 4 attempts
+    for attempt in range(4):
 
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt
-        )
+        try:
 
-        answer = response.text
-
-        if not answer:
-
-            return (
-                "माफ कीजिए, अभी उत्तर तैयार नहीं हो पाया। "
-                "कृपया दोबारा पूछें।"
+            logger.info(
+                "Gemini request attempt %s/4",
+                attempt + 1
             )
 
-        return answer
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt
+            )
 
-    except Exception:
+            answer = response.text
 
-        logger.exception("Gemini Error")
+            if answer:
+                logger.info("Gemini response received")
+                return answer
 
-        return (
-            "⚠️ अभी AI से उत्तर लेने में समस्या हो रही है।\n\n"
-            "कृपया थोड़ी देर बाद दोबारा प्रयास करें।"
-        )
+            logger.warning(
+                "Gemini returned an empty response"
+            )
+
+        except Exception as e:
+
+            error_text = str(e)
+
+            logger.exception(
+                "Gemini Error on attempt %s/4",
+                attempt + 1
+            )
+
+            # Retry only temporary server/rate-limit errors
+            temporary_error = (
+                "503" in error_text
+                or "UNAVAILABLE" in error_text
+                or "429" in error_text
+                or "RESOURCE_EXHAUSTED" in error_text
+                or "500" in error_text
+                or "INTERNAL" in error_text
+            )
+
+            if not temporary_error:
+                break
+
+            if attempt < 3:
+
+                delay = (2 ** attempt) + random.uniform(
+                    0.5,
+                    1.5
+                )
+
+                logger.info(
+                    "Temporary Gemini error. "
+                    "Retrying in %.1f seconds...",
+                    delay
+                )
+
+                time.sleep(delay)
+
+    return (
+        "⚠️ अभी Gemini AI सेवा व्यस्त है।\n\n"
+        "मैंने दोबारा प्रयास किया लेकिन अभी उत्तर "
+        "नहीं मिल पाया। कृपया कुछ सेकंड बाद "
+        "वही सवाल फिर से भेजें।"
+    )
 
 
 # ==================================================
-# NORMAL TELEGRAM MESSAGE
+# NORMAL MESSAGE
 # ==================================================
 
 async def handle_message(
@@ -263,11 +283,9 @@ async def handle_message(
         return
 
     try:
-
         await update.message.chat.send_action(
             "typing"
         )
-
     except Exception:
         pass
 
@@ -320,20 +338,18 @@ def main():
     print("IRCE Coaching Bot Starting...")
     print("======================================")
 
-    # Start Render health server
+    # Render health server
     threading.Thread(
         target=run_server,
         daemon=True
     ).start()
 
-    # Telegram application
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
         .build()
     )
 
-    # Commands
     application.add_handler(
         CommandHandler(
             "start",
@@ -348,7 +364,6 @@ def main():
         )
     )
 
-    # Direct questions
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -356,7 +371,6 @@ def main():
         )
     )
 
-    # Error handler
     application.add_error_handler(
         error_handler
     )
