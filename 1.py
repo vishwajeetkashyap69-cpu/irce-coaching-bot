@@ -1,5 +1,7 @@
 import os
 import logging
+import re
+from html import escape
 import threading
 import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -128,7 +130,9 @@ async def start(
         "📝 कक्षा 10 इतिहास के notes बनाओ।\n"
         "🏛️ संविधान की प्रस्तावना समझाइए।\n"
         "❓ 20 Science MCQ बनाओ।\n"
-        "➗ इस सवाल को आसान तरीके से solve करो।\n\n"
+        "➗ इस सवाल को आसान तरीके से solve करो।\n"
+        "📚 50 GK MCQ बनाओ।\n"
+        "📝 कक्षा 10 विज्ञान के notes बनाओ।\n\n"
         "🎯 IRCE Coaching AI Assistant"
     )
 
@@ -160,7 +164,10 @@ async def help_command(
         "🌐 GK\n"
         "🎯 Competitive Exams\n\n"
         "आप Notes, MCQ, Explanation और "
-        "Question Solving मांग सकते हैं।"
+        "Question Solving मांग सकते हैं।\n\n"
+        "Quick commands (optional):\n"
+        "/mcq 20 कक्षा 10 इतिहास\n"
+        "/notes कक्षा 10 इतिहास अध्याय 1"
     )
 
     await safe_reply(update.message, message)
@@ -196,6 +203,146 @@ def is_temporary_error(error_text):
 # GROQ AI
 # =========================================================
 
+def clean_ai_text(text):
+    if not text:
+        return ""
+
+    # Normalize escaped Markdown characters.
+    text = text.replace(r"\*", "*")
+    text = text.replace(r"\_", "_")
+    text = text.replace(r"\[", "[")
+    text = text.replace(r"\]", "]")
+    text = text.replace(r"\(", "(")
+    text = text.replace(r"\)", ")")
+    text = text.replace(r"\#", "#")
+
+    # Remove Markdown images/links, keeping visible text.
+    text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', text)
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+
+    # Remove Telegram image URLs.
+    text = re.sub(
+        r'https?://web\.telegram\.org/\S+',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Convert bold/italic Markdown to plain text.
+    text = text.replace("**", "")
+    text = text.replace("__", "")
+    text = re.sub(r'\*([^*\n]+)\*', r'\1', text)
+
+    # Remove heading markers and backticks.
+    text = re.sub(r'^\s*#{1,6}\s*', '', text, flags=re.MULTILINE)
+    text = text.replace("`", "")
+
+    # Convert list bullets to a simple dash.
+    text = re.sub(
+        r'^\s*[•*🔹👉]\s+',
+        '- ',
+        text,
+        flags=re.MULTILINE,
+    )
+
+    # If a line was intended as a bold/list item but has no dash,
+    # leave it as normal text; no bold formatting is used anywhere.
+    text = re.sub(r'\[([^\]]+)\]', r'\1', text)
+
+    # Clean spacing.
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
+
+
+def detect_request_mode(question):
+    """Detect the student's likely request type without another AI call."""
+    q = question.lower().strip()
+
+    # MCQ / objective practice
+    mcq_words = (
+        "mcq", "m.c.q", "multiple choice", "objective",
+        "बहुविकल्प", "बहुविकल्पीय", "ऑब्जेक्टिव", "वस्तुनिष्ठ",
+        "प्रश्न बनाओ", "प्रश्न दो", "questions"
+    )
+    if any(word in q for word in mcq_words):
+        return "MCQ"
+
+    # Notes / revision
+    notes_words = (
+        "notes", "note", "नोट्स", "नोट", "short notes",
+        "संक्षिप्त नोट्स", "रिवीजन", "revision", "पढ़ने की सामग्री"
+    )
+    if any(word in q for word in notes_words):
+        return "NOTES"
+
+    # Solving / explanation
+    solve_words = (
+        "solve", "solution", "हल करो", "हल करें", "समाधान",
+        "explain", "explanation", "समझाओ", "समझाइए", "बताओ",
+        "कैसे", "क्यों", "what is", "meaning"
+    )
+    if any(word in q for word in solve_words):
+        return "EXPLANATION"
+
+    return "GENERAL"
+
+
+def detect_question_count(question):
+    """Find a requested MCQ/question count; default to 10."""
+    match = re.search(r"(?<!\d)(\d{1,3})(?!\d)\s*(?:mcq|m\.c\.q|questions?|प्रश्न|सवाल)", question, re.IGNORECASE)
+    if match:
+        count = int(match.group(1))
+        return max(1, min(count, 100))
+
+    # Also support forms like: 20 Science MCQ
+    match = re.search(r"(?<!\d)(\d{1,3})(?!\d)", question)
+    if match and detect_request_mode(question) == "MCQ":
+        count = int(match.group(1))
+        return max(1, min(count, 100))
+
+    return 10
+
+
+def build_request_instruction(question):
+    mode = detect_request_mode(question)
+
+    if mode == "MCQ":
+        count = detect_question_count(question)
+        return (
+            f"REQUEST MODE: MCQ\n"
+            f"- विद्यार्थी ने MCQ मांगे हैं। कुल {count} प्रश्न दें।\n"
+            "- हर प्रश्न के 4 विकल्प दें: A, B, C, D।\n"
+            "- प्रश्न क्रमांक साफ रखें।\n"
+            "- अंत में अलग से उत्तर कुंजी दें।\n"
+            "- प्रश्न विषय और बताई गई कक्षा/परीक्षा के स्तर के अनुरूप हों।\n"
+            "- तथ्यात्मक प्रश्नों में मनगढ़ंत जानकारी न दें।"
+        )
+
+    if mode == "NOTES":
+        return (
+            "REQUEST MODE: NOTES\n"
+            "- विद्यार्थी को व्यवस्थित परीक्षा-उपयोगी नोट्स दें।\n"
+            "- पहले विषय/अध्याय का नाम, फिर परिचय, मुख्य बिंदु, महत्वपूर्ण तथ्य और परीक्षा में याद रखने योग्य बातें दें।\n"
+            "- यदि कक्षा बताई गई है तो उसी स्तर की भाषा रखें।\n"
+            "- अनावश्यक लंबी भूमिका न दें।"
+        )
+
+    if mode == "EXPLANATION":
+        return (
+            "REQUEST MODE: EXPLANATION\n"
+            "- विद्यार्थी की बात को आसान भाषा में समझाएं।\n"
+            "- जरूरत होने पर चरणबद्ध तरीके से समझाएं।\n"
+            "- अंत में छोटा परीक्षा-उपयोगी निष्कर्ष दें।"
+        )
+
+    return (
+        "REQUEST MODE: GENERAL\n"
+        "- विद्यार्थी के सीधे प्रश्न का सीधा, सही और उपयोगी उत्तर दें।"
+    )
+
+
 async def ask_groq(question):
     system_prompt = """
 आप IRCE Coaching के AI Study Assistant हैं।
@@ -209,8 +356,8 @@ async def ask_groq(question):
 4. यदि विद्यार्थी कक्षा बताता है, तो उसी कक्षा के स्तर के अनुसार उत्तर दें।
 
 Formatting:
-1. Raw Markdown symbols का उपयोग न करें।
-2. उत्तर में **, *, #, [ ] जैसे symbols दिखाई नहीं देने चाहिए।
+1. Bold formatting बिल्कुल न करें। महत्वपूर्ण points के लिए केवल - (dash) का उपयोग करें।
+2. Markdown links, image links और web.telegram.org URLs बिल्कुल न दें।
 3. Heading के लिए emoji और साफ text का उपयोग करें।
 4. उत्तर मोबाइल पर पढ़ने में आसान होना चाहिए।
 5. महत्वपूर्ण बातों के लिए 🔹 या 👉 का उपयोग करें।
@@ -282,9 +429,14 @@ Question solving के लिए:
 IRCE Coaching AI Assistant
 """
 
+    request_instruction = build_request_instruction(question)
+
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
+        {
+            "role": "user",
+            "content": request_instruction + "\n\nSTUDENT QUESTION:\n" + question,
+        },
     ]
 
     # Primary model: one request first for speed.
@@ -303,7 +455,7 @@ IRCE Coaching AI Assistant
 
         if answer:
             logger.info("Primary Groq response received")
-            return answer.strip()
+            return clean_ai_text(answer)
 
     except Exception as e:
         error_text = str(e)
@@ -339,7 +491,7 @@ IRCE Coaching AI Assistant
                     "Fallback Groq response received: %s",
                     model
                 )
-                return answer.strip()
+                return clean_ai_text(answer)
 
         except Exception as e:
             logger.warning(
@@ -352,6 +504,45 @@ IRCE Coaching AI Assistant
         "⚠️ अभी AI सेवा थोड़ी व्यस्त है।\n\n"
         "कुछ सेकंड बाद अपना सवाल फिर भेजें।"
     )
+
+
+# =========================================================
+# OPTIONAL QUICK COMMANDS
+# =========================================================
+
+async def mcq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    question = " ".join(context.args).strip()
+    if not question:
+        await safe_reply(update.message, "उदाहरण: /mcq 20 कक्षा 10 इतिहास")
+        return
+    await update.message.chat.send_action("typing")
+    answer = await ask_groq(f"{question} MCQ")
+    await send_long_reply(update.message, answer)
+
+
+async def notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    question = " ".join(context.args).strip()
+    if not question:
+        await safe_reply(update.message, "उदाहरण: /notes कक्षा 10 इतिहास अध्याय 1")
+        return
+    await update.message.chat.send_action("typing")
+    answer = await ask_groq(f"{question} के notes बनाओ")
+    await send_long_reply(update.message, answer)
+
+
+async def send_long_reply(message, text):
+    max_length = 4000
+    if len(text) <= max_length:
+        await safe_reply(message, text)
+        return
+
+    for i in range(0, len(text), max_length):
+        if not await safe_reply(message, text[i:i + max_length]):
+            break
 
 
 # =========================================================
@@ -377,21 +568,7 @@ async def handle_message(
 
     answer = await ask_groq(question)
 
-    # Telegram message limit
-    max_length = 4000
-
-    if len(answer) <= max_length:
-        await safe_reply(update.message, answer)
-        return
-
-    for i in range(0, len(answer), max_length):
-        chunk = answer[i:i + max_length]
-
-        if not await safe_reply(
-            update.message,
-            chunk
-        ):
-            break
+    await send_long_reply(update.message, answer)
 
 
 # =========================================================
@@ -458,6 +635,14 @@ def main():
 
     application.add_handler(
         CommandHandler("help", help_command)
+    )
+
+    application.add_handler(
+        CommandHandler("mcq", mcq_command)
+    )
+
+    application.add_handler(
+        CommandHandler("notes", notes_command)
     )
 
     # Normal text messages
