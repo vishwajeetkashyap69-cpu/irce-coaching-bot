@@ -16,9 +16,9 @@ from telegram.ext import (
 from google import genai
 
 
-# ==================================================
-# IRCE COACHING - TELEGRAM AI STUDY BOT
-# ==================================================
+# =========================================================
+# IRCE COACHING - AI STUDY ASSISTANT
+# =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -30,26 +30,23 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY is missing")
 
 
-# ==================================================
-# GEMINI
-# ==================================================
+# =========================================================
+# GEMINI CLIENT
+# =========================================================
 
-client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Primary + fallback models
+# Primary model + fallback models
 MODELS = [
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
 ]
 
 
-# ==================================================
+# =========================================================
 # LOGGING
-# ==================================================
+# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -59,15 +56,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ==================================================
+# =========================================================
 # RENDER HEALTH SERVER
-# ==================================================
+# =========================================================
 
-def run_server():
+def run_health_server():
 
-    port = int(
-        os.environ.get("PORT", 10000)
-    )
+    port = int(os.environ.get("PORT", 10000))
 
     class Handler(BaseHTTPRequestHandler):
 
@@ -77,7 +72,7 @@ def run_server():
 
             self.send_header(
                 "Content-Type",
-                "text/plain"
+                "text/plain; charset=utf-8"
             )
 
             self.end_headers()
@@ -86,11 +81,7 @@ def run_server():
                 b"IRCE Coaching Bot is running"
             )
 
-        def log_message(
-            self,
-            format,
-            *args
-        ):
+        def log_message(self, format, *args):
             return
 
     server = HTTPServer(
@@ -98,16 +89,14 @@ def run_server():
         Handler
     )
 
-    print(
-        f"Health server running on port {port}"
-    )
+    print(f"Health server running on port {port}")
 
     server.serve_forever()
 
 
-# ==================================================
-# START
-# ==================================================
+# =========================================================
+# START COMMAND
+# =========================================================
 
 async def start(
     update: Update,
@@ -116,9 +105,12 @@ async def start(
 
     message = (
         "🎓 *IRCE Coaching में आपका स्वागत है!*\n\n"
+
         "🤖 मैं आपका AI Study Assistant हूँ।\n\n"
-        "📚 किसी `/study` या keyword की जरूरत नहीं है।\n\n"
+
+        "📚 किसी command या keyword की जरूरत नहीं है।\n"
         "✍️ बस अपना सवाल सीधे लिखिए।\n\n"
+
         "उदाहरण:\n"
         "• भारत की राजधानी क्या है?\n"
         "• 1857 की क्रांति समझाइए।\n"
@@ -126,6 +118,7 @@ async def start(
         "• संविधान की प्रस्तावना समझाइए।\n"
         "• 20 Science MCQ बनाओ।\n"
         "• इस सवाल को आसान तरीके से solve करो।\n\n"
+
         "🎯 *IRCE Coaching AI Assistant*"
     )
 
@@ -135,9 +128,9 @@ async def start(
     )
 
 
-# ==================================================
-# HELP
-# ==================================================
+# =========================================================
+# HELP COMMAND
+# =========================================================
 
 async def help_command(
     update: Update,
@@ -146,8 +139,10 @@ async def help_command(
 
     message = (
         "📖 *IRCE Coaching Help*\n\n"
+
         "बस अपना सवाल सीधे लिखें।\n"
         "किसी command की जरूरत नहीं है।\n\n"
+
         "📚 History\n"
         "🌍 Geography\n"
         "🏛️ Political Science\n"
@@ -158,8 +153,9 @@ async def help_command(
         "🧠 Reasoning\n"
         "🌐 GK\n"
         "🎯 Competitive Exams\n\n"
-        "आप notes, MCQ, explanation और "
-        "question solving भी मांग सकते हैं।"
+
+        "आप Notes, MCQ, Explanation और "
+        "Question Solving मांग सकते हैं।"
     )
 
     await update.message.reply_text(
@@ -168,9 +164,9 @@ async def help_command(
     )
 
 
-# ==================================================
-# CHECK TEMPORARY GEMINI ERROR
-# ==================================================
+# =========================================================
+# TEMPORARY ERROR CHECK
+# =========================================================
 
 def is_temporary_error(error_text: str) -> bool:
 
@@ -183,6 +179,8 @@ def is_temporary_error(error_text: str) -> bool:
         "INTERNAL",
         "TIMEOUT",
         "DEADLINE_EXCEEDED",
+        "timed out",
+        "Timeout",
     )
 
     return any(
@@ -191,9 +189,9 @@ def is_temporary_error(error_text: str) -> bool:
     )
 
 
-# ==================================================
-# GEMINI RESPONSE WITH MODEL FALLBACK
-# ==================================================
+# =========================================================
+# GEMINI
+# =========================================================
 
 async def ask_gemini(question: str) -> str:
 
@@ -215,19 +213,17 @@ async def ask_gemini(question: str) -> str:
    के प्रश्नों में व्यवस्थित उत्तर दें।
 6. यदि विद्यार्थी कक्षा बताता है,
    तो उसी कक्षा के स्तर के अनुसार समझाएं।
-7. Notes मांगने पर व्यवस्थित notes दें।
+7. Notes मांगने पर व्यवस्थित Notes दें।
 8. MCQ मांगने पर प्रश्न और options दें।
 9. Question solve करने को कहा जाए तो
    step-by-step समाधान दें।
-10. अगर विद्यार्थी कहे "आसान तरीके से समझाओ",
+10. "आसान तरीके से समझाओ" कहा जाए,
     तो बहुत सरल भाषा का प्रयोग करें।
 11. महत्वपूर्ण परीक्षा बिंदुओं को अलग से बताएं।
 12. बिना जरूरत बहुत लंबा उत्तर न दें।
 13. गलत जानकारी को तथ्य के रूप में प्रस्तुत न करें।
-14. विद्यार्थी को पढ़ाई के उद्देश्य से
-    उपयोगी और साफ उत्तर दें।
-15. विद्यार्थी को /study या किसी keyword
-    की जरूरत नहीं है।
+14. उत्तर साफ, उपयोगी और विद्यार्थी-केंद्रित रखें।
+15. विद्यार्थी को किसी command की जरूरत नहीं है।
 
 आपका नाम:
 
@@ -240,10 +236,6 @@ IRCE Coaching AI Assistant
         + question
     )
 
-    # ==================================================
-    # MODEL FALLBACK SYSTEM
-    # ==================================================
-
     for model_index, model in enumerate(MODELS):
 
         logger.info(
@@ -253,7 +245,6 @@ IRCE Coaching AI Assistant
             len(MODELS)
         )
 
-        # प्रत्येक model को अधिकतम 2 बार try करेंगे
         for attempt in range(2):
 
             try:
@@ -264,8 +255,6 @@ IRCE Coaching AI Assistant
                     attempt + 1
                 )
 
-                # generate_content synchronous है,
-                # इसलिए इसे अलग thread में चलाते हैं
                 response = await asyncio.to_thread(
                     client.models.generate_content,
                     model=model,
@@ -277,16 +266,14 @@ IRCE Coaching AI Assistant
                 if answer:
 
                     logger.info(
-                        "Gemini response received successfully "
-                        "from model=%s",
+                        "Gemini response received from %s",
                         model
                     )
 
                     return answer.strip()
 
                 logger.warning(
-                    "Gemini returned empty response "
-                    "from model=%s",
+                    "Gemini returned empty response: %s",
                     model
                 )
 
@@ -294,7 +281,6 @@ IRCE Coaching AI Assistant
 
                 error_text = str(e)
 
-                # पूरा traceback बार-बार print नहीं करेंगे
                 logger.error(
                     "Gemini error | model=%s | attempt=%s/2 | %s",
                     model,
@@ -302,26 +288,20 @@ IRCE Coaching AI Assistant
                     error_text
                 )
 
-                # Temporary error है तो retry/fallback
                 if is_temporary_error(error_text):
 
                     if attempt == 0:
 
                         logger.info(
-                            "Temporary error on %s. "
-                            "Retrying after 2 seconds...",
-                            model
+                            "Temporary error. Retrying after 2 seconds..."
                         )
 
                         await asyncio.sleep(2)
 
                         continue
 
-                    # दूसरा attempt भी fail
-                    # तो अगले model पर जाएंगे
                     logger.warning(
-                        "Model %s unavailable. "
-                        "Moving to next fallback model.",
+                        "Model %s unavailable. Trying next model.",
                         model
                     )
 
@@ -329,37 +309,24 @@ IRCE Coaching AI Assistant
 
                 else:
 
-                    # Permanent error होने पर
-                    # उसी model को बार-बार try नहीं करेंगे
                     logger.error(
-                        "Non-temporary error on model=%s. "
-                        "Moving to next model.",
-                        model
+                        "Non-temporary error. Trying next model."
                     )
 
                     break
 
-    # ==================================================
-    # ALL MODELS FAILED
-    # ==================================================
 
-    logger.error(
-        "All Gemini fallback models failed."
-    )
+    logger.error("All Gemini models failed.")
 
     return (
-        "⚠️ अभी AI सेवा बहुत व्यस्त है।\n\n"
-        "मैंने उपलब्ध Gemini models पर "
-        "दोबारा प्रयास किया, लेकिन अभी उत्तर "
-        "नहीं मिल पाया।\n\n"
-        "कृपया 10–20 सेकंड बाद वही सवाल "
-        "फिर से भेजें।"
+        "⚠️ अभी AI सेवा से उत्तर प्राप्त नहीं हो पाया।\n\n"
+        "कृपया कुछ सेकंड बाद वही सवाल फिर से भेजें।"
     )
 
 
-# ==================================================
+# =========================================================
 # NORMAL MESSAGE
-# ==================================================
+# =========================================================
 
 async def handle_message(
     update: Update,
@@ -384,9 +351,7 @@ async def handle_message(
 
         pass
 
-    answer = await ask_gemini(
-        question
-    )
+    answer = await ask_gemini(question)
 
     # Telegram message limit
     max_length = 4000
@@ -410,9 +375,9 @@ async def handle_message(
             )
 
 
-# ==================================================
-# ERROR HANDLER
-# ==================================================
+# =========================================================
+# TELEGRAM ERROR HANDLER
+# =========================================================
 
 async def error_handler(
     update: object,
@@ -425,33 +390,29 @@ async def error_handler(
     )
 
 
-# ==================================================
+# =========================================================
 # MAIN
-# ==================================================
+# =========================================================
 
 def main():
 
-    print(
-        "======================================"
-    )
-
-    print(
-        "IRCE Coaching Bot Starting..."
-    )
-
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("IRCE Coaching Bot Starting...")
+    print("======================================")
 
     # Render health server
     threading.Thread(
-        target=run_server,
+        target=run_health_server,
         daemon=True
     ).start()
 
     application = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
         .build()
     )
 
@@ -480,27 +441,18 @@ def main():
         error_handler
     )
 
-    print(
-        "======================================"
-    )
-
-    print(
-        "IRCE Coaching Bot is LIVE"
-    )
-
-    print(
-        "======================================"
-    )
+    print("======================================")
+    print("IRCE Coaching Bot is LIVE")
+    print("======================================")
 
     application.run_polling(
         drop_pending_updates=True
     )
 
 
-# ==================================================
+# =========================================================
 # RUN
-# ==================================================
+# =========================================================
 
 if __name__ == "__main__":
-
     main()
