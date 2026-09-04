@@ -1,6 +1,7 @@
 import os
 import logging
 import re
+import json
 from html import escape
 import threading
 import asyncio
@@ -131,8 +132,7 @@ async def start(
         "🏛️ संविधान की प्रस्तावना समझाइए।\n"
         "❓ 20 Science MCQ बनाओ।\n"
         "➗ इस सवाल को आसान तरीके से solve करो।\n"
-        "📚 50 GK MCQ बनाओ।\n"
-        "📝 कक्षा 10 विज्ञान के notes बनाओ।\n\n"
+        "🎯 /quiz कक्षा 10 इतिहास 10\n\n"
         "🎯 IRCE Coaching AI Assistant"
     )
 
@@ -163,14 +163,47 @@ async def help_command(
         "🧠 Reasoning\n"
         "🌐 GK\n"
         "🎯 Competitive Exams\n\n"
-        "आप Notes, MCQ, Explanation और "
-        "Question Solving मांग सकते हैं।\n\n"
-        "Quick commands (optional):\n"
-        "/mcq 20 कक्षा 10 इतिहास\n"
-        "/notes कक्षा 10 इतिहास अध्याय 1"
+        "आप Notes, MCQ, Explanation, Question Solving और Interactive Quiz मांग सकते हैं।\n\n"
+        "🎯 Quiz: /quiz कक्षा 10 इतिहास 10\n"
+        "🛑 Quiz रोकें: /quizstop"
     )
 
     await safe_reply(update.message, message)
+
+
+async def mcq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    topic = " ".join(context.args).strip()
+    if not topic:
+        await safe_reply(update.message, "📝 उदाहरण: /mcq कक्षा 8 विज्ञान 20")
+        return
+    await handle_message_text(update, f"{topic} MCQ")
+
+
+async def notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    topic = " ".join(context.args).strip()
+    if not topic:
+        await safe_reply(update.message, "📝 उदाहरण: /notes कक्षा 10 इतिहास")
+        return
+    await handle_message_text(update, f"{topic} notes")
+
+
+async def handle_message_text(update: Update, question: str):
+    try:
+        await update.message.chat.send_action("typing")
+    except Exception:
+        pass
+    answer = await ask_groq(question)
+    max_length = 4000
+    if len(answer) <= max_length:
+        await safe_reply(update.message, answer)
+    else:
+        for i in range(0, len(answer), max_length):
+            if not await safe_reply(update.message, answer[i:i + max_length]):
+                break
 
 
 # =========================================================
@@ -257,94 +290,37 @@ def clean_ai_text(text):
 
 
 def detect_request_mode(question):
-    """Detect the student's likely request type without another AI call."""
+    """Detect likely study mode and requested MCQ count."""
     q = question.lower().strip()
+    mode = "general"
 
-    # MCQ / objective practice
-    mcq_words = (
-        "mcq", "m.c.q", "multiple choice", "objective",
-        "बहुविकल्प", "बहुविकल्पीय", "ऑब्जेक्टिव", "वस्तुनिष्ठ",
-        "प्रश्न बनाओ", "प्रश्न दो", "questions"
-    )
-    if any(word in q for word in mcq_words):
-        return "MCQ"
+    if any(x in q for x in ["mcq", "बहुविकल्प", "objective", "वस्तुनिष्ठ"]):
+        mode = "mcq"
+    elif any(x in q for x in ["notes", "नोट्स", "नोट", "short notes", "संक्षिप्त नोट्स"]):
+        mode = "notes"
+    elif any(x in q for x in ["solve", "हल करो", "हल करें", "समाधान", "calculate", "गणना"]):
+        mode = "solve"
+    elif any(x in q for x in ["explain", "समझाओ", "समझाइए", "व्याख्या", "बताओ", "बताइए"]):
+        mode = "explain"
 
-    # Notes / revision
-    notes_words = (
-        "notes", "note", "नोट्स", "नोट", "short notes",
-        "संक्षिप्त नोट्स", "रिवीजन", "revision", "पढ़ने की सामग्री"
-    )
-    if any(word in q for word in notes_words):
-        return "NOTES"
-
-    # Solving / explanation
-    solve_words = (
-        "solve", "solution", "हल करो", "हल करें", "समाधान",
-        "explain", "explanation", "समझाओ", "समझाइए", "बताओ",
-        "कैसे", "क्यों", "what is", "meaning"
-    )
-    if any(word in q for word in solve_words):
-        return "EXPLANATION"
-
-    return "GENERAL"
-
-
-def detect_question_count(question):
-    """Find a requested MCQ/question count; default to 10."""
-    match = re.search(r"(?<!\d)(\d{1,3})(?!\d)\s*(?:mcq|m\.c\.q|questions?|प्रश्न|सवाल)", question, re.IGNORECASE)
-    if match:
-        count = int(match.group(1))
-        return max(1, min(count, 100))
-
-    # Also support forms like: 20 Science MCQ
-    match = re.search(r"(?<!\d)(\d{1,3})(?!\d)", question)
-    if match and detect_request_mode(question) == "MCQ":
-        count = int(match.group(1))
-        return max(1, min(count, 100))
-
-    return 10
-
-
-def build_request_instruction(question):
-    mode = detect_request_mode(question)
-
-    if mode == "MCQ":
-        count = detect_question_count(question)
-        return (
-            f"REQUEST MODE: MCQ\n"
-            f"- विद्यार्थी ने MCQ मांगे हैं। कुल {count} प्रश्न दें।\n"
-            "- हर प्रश्न के 4 विकल्प दें: A, B, C, D।\n"
-            "- प्रश्न क्रमांक साफ रखें।\n"
-            "- अंत में अलग से उत्तर कुंजी दें।\n"
-            "- प्रश्न विषय और बताई गई कक्षा/परीक्षा के स्तर के अनुरूप हों।\n"
-            "- तथ्यात्मक प्रश्नों में मनगढ़ंत जानकारी न दें।"
-        )
-
-    if mode == "NOTES":
-        return (
-            "REQUEST MODE: NOTES\n"
-            "- विद्यार्थी को व्यवस्थित परीक्षा-उपयोगी नोट्स दें।\n"
-            "- पहले विषय/अध्याय का नाम, फिर परिचय, मुख्य बिंदु, महत्वपूर्ण तथ्य और परीक्षा में याद रखने योग्य बातें दें।\n"
-            "- यदि कक्षा बताई गई है तो उसी स्तर की भाषा रखें।\n"
-            "- अनावश्यक लंबी भूमिका न दें।"
-        )
-
-    if mode == "EXPLANATION":
-        return (
-            "REQUEST MODE: EXPLANATION\n"
-            "- विद्यार्थी की बात को आसान भाषा में समझाएं।\n"
-            "- जरूरत होने पर चरणबद्ध तरीके से समझाएं।\n"
-            "- अंत में छोटा परीक्षा-उपयोगी निष्कर्ष दें।"
-        )
-
-    return (
-        "REQUEST MODE: GENERAL\n"
-        "- विद्यार्थी के सीधे प्रश्न का सीधा, सही और उपयोगी उत्तर दें।"
-    )
+    numbers = re.findall(r"\b(10|20|25|30|40|50|75|100)\b", q)
+    count = int(numbers[0]) if numbers else 20
+    if mode != "mcq":
+        count = None
+    return mode, count
 
 
 async def ask_groq(question):
-    system_prompt = """
+    mode, count = detect_request_mode(question)
+    mode_instruction = {
+        "mcq": f"\nयह MCQ request है। ठीक {count} प्रश्न देने की कोशिश करें। हर प्रश्न में A, B, C, D विकल्प और स्पष्ट उत्तर दें।",
+        "notes": "\nयह Notes request है। विषय के अनुसार headings, मुख्य बिंदु, महत्वपूर्ण तथ्य और परीक्षा उपयोगी बातें दें।",
+        "solve": "\nयह Question Solving request है। चरण-दर-चरण सरल समाधान दें और अंत में अंतिम उत्तर दें।",
+        "explain": "\nयह Explanation request है। विषय को विद्यार्थी के स्तर के अनुसार सरल उदाहरणों के साथ समझाएं।",
+        "general": "\nयह सामान्य अध्ययन प्रश्न है। सीधे प्रश्न का स्पष्ट और उपयोगी उत्तर दें।",
+    }[mode]
+
+    system_prompt = f"""
 आप IRCE Coaching के AI Study Assistant हैं।
 
 आपका काम विद्यार्थियों को तेज, सही, सरल और आकर्षक तरीके से पढ़ाई में मदद करना है।
@@ -427,16 +403,13 @@ Question solving के लिए:
 
 आपका नाम:
 IRCE Coaching AI Assistant
-"""
 
-    request_instruction = build_request_instruction(question)
+{mode_instruction}
+"""
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": request_instruction + "\n\nSTUDENT QUESTION:\n" + question,
-        },
+        {"role": "user", "content": question},
     ]
 
     # Primary model: one request first for speed.
@@ -506,43 +479,226 @@ IRCE Coaching AI Assistant
     )
 
 
+
+
 # =========================================================
-# OPTIONAL QUICK COMMANDS
+# INTERACTIVE QUIZ MODE
 # =========================================================
 
-async def mcq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    question = " ".join(context.args).strip()
-    if not question:
-        await safe_reply(update.message, "उदाहरण: /mcq 20 कक्षा 10 इतिहास")
-        return
-    await update.message.chat.send_action("typing")
-    answer = await ask_groq(f"{question} MCQ")
-    await send_long_reply(update.message, answer)
+QUIZ_SESSIONS = {}
+QUIZ_MAX_QUESTIONS = 20
 
 
-async def notes_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    question = " ".join(context.args).strip()
-    if not question:
-        await safe_reply(update.message, "उदाहरण: /notes कक्षा 10 इतिहास अध्याय 1")
-        return
-    await update.message.chat.send_action("typing")
-    answer = await ask_groq(f"{question} के notes बनाओ")
-    await send_long_reply(update.message, answer)
+def parse_quiz_args(args):
+    text = " ".join(args).strip()
+    count = 10
+    match = re.search(r"\b(5|10|15|20)\b", text)
+    if match:
+        count = int(match.group(1))
+        text = re.sub(r"\b(5|10|15|20)\b", "", text).strip()
+    return text, min(count, QUIZ_MAX_QUESTIONS)
 
 
-async def send_long_reply(message, text):
-    max_length = 4000
-    if len(text) <= max_length:
-        await safe_reply(message, text)
-        return
+def extract_json_array(text):
+    if not text:
+        return None
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, list) else None
+    except Exception:
+        pass
+    start = text.find("[")
+    end = text.rfind("]")
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(text[start:end + 1])
+            return data if isinstance(data, list) else None
+        except Exception:
+            return None
+    return None
 
-    for i in range(0, len(text), max_length):
-        if not await safe_reply(message, text[i:i + max_length]):
+
+def normalize_quiz_questions(data, expected_count):
+    if not isinstance(data, list):
+        return []
+    questions = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        q = str(item.get("question", "")).strip()
+        options = item.get("options")
+        answer = str(item.get("answer", "")).strip().upper()
+        explanation = str(item.get("explanation", "")).strip()
+        if not q or not isinstance(options, list) or len(options) != 4:
+            continue
+        options = [str(x).strip() for x in options]
+        if answer not in ("A", "B", "C", "D"):
+            if answer in ("1", "2", "3", "4"):
+                answer = "ABCD"[int(answer) - 1]
+            else:
+                continue
+        questions.append({
+            "question": q,
+            "options": options,
+            "answer": answer,
+            "explanation": explanation,
+        })
+        if len(questions) >= expected_count:
             break
+    return questions
+
+
+async def generate_quiz(topic, count):
+    system_prompt = f"""
+आप IRCE Coaching के Interactive Quiz Generator हैं।
+विषय: {topic}
+ठीक {count} MCQ तैयार करें।
+केवल valid JSON array दें, कोई अतिरिक्त text नहीं।
+हर item का format:
+{{
+  "question": "प्रश्न",
+  "options": ["विकल्प A", "विकल्प B", "विकल्प C", "विकल्प D"],
+  "answer": "A",
+  "explanation": "एक छोटी व्याख्या"
+}}
+नियम: answer केवल A/B/C/D हो। प्रश्न विषय और विद्यार्थी के स्तर के अनुसार हों।
+"""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"{topic} पर {count} quiz questions बनाइए।"},
+    ]
+    for model in [PRIMARY_MODEL] + FALLBACK_MODELS:
+        try:
+            response = await asyncio.to_thread(
+                groq_client.chat.completions.create,
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=3500,
+            )
+            raw = response.choices[0].message.content
+            questions = normalize_quiz_questions(
+                extract_json_array(raw), count
+            )
+            if len(questions) >= min(count, 5):
+                return questions
+        except Exception as e:
+            logger.warning("Quiz generation failed on %s: %s", model, e)
+    return []
+
+
+async def send_quiz_question(message, session):
+    index = session["index"]
+    q = session["questions"][index]
+    lines = [
+        f"🎯 Quiz — प्रश्न {index + 1}/{len(session['questions'])}",
+        "",
+        f"❓ {q['question']}",
+        "",
+        f"A. {q['options'][0]}",
+        f"B. {q['options'][1]}",
+        f"C. {q['options'][2]}",
+        f"D. {q['options'][3]}",
+        "",
+        "👉 अपना उत्तर A, B, C या D भेजें।",
+    ]
+    await safe_reply(message, "\n".join(lines))
+
+
+async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    topic, count = parse_quiz_args(context.args)
+    if not topic:
+        await safe_reply(
+            update.message,
+            "🎯 उदाहरण: /quiz कक्षा 10 इतिहास 10\n\n"
+            "Quiz रोकने के लिए /quizstop भेजें।"
+        )
+        return
+    chat_id = update.effective_chat.id
+    await safe_reply(update.message, f"⏳ {topic} का quiz तैयार हो रहा है...")
+    questions = await generate_quiz(topic, count)
+    if not questions:
+        await safe_reply(
+            update.message,
+            "⚠️ अभी quiz तैयार नहीं हो पाया।\nकुछ सेकंड बाद फिर कोशिश करें।"
+        )
+        return
+    QUIZ_SESSIONS[chat_id] = {
+        "topic": topic,
+        "questions": questions,
+        "index": 0,
+        "score": 0,
+    }
+    session = QUIZ_SESSIONS[chat_id]
+    await safe_reply(
+        update.message,
+        f"🎓 Quiz शुरू!\n📚 विषय: {topic}\n📝 प्रश्न: {len(questions)}\n\n"
+        "हर प्रश्न का उत्तर A/B/C/D में दें।"
+    )
+    await send_quiz_question(update.message, session)
+
+
+async def quizstop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    chat_id = update.effective_chat.id
+    if chat_id in QUIZ_SESSIONS:
+        del QUIZ_SESSIONS[chat_id]
+        await safe_reply(update.message, "🛑 Quiz रोक दिया गया।")
+    else:
+        await safe_reply(update.message, "ℹ️ अभी कोई quiz चल नहीं रहा है।")
+
+
+async def handle_quiz_answer(update: Update):
+    if not update.message or not update.effective_chat:
+        return False
+    chat_id = update.effective_chat.id
+    session = QUIZ_SESSIONS.get(chat_id)
+    if not session:
+        return False
+    answer = update.message.text.strip().upper()
+    if answer in ("1", "2", "3", "4"):
+        answer = "ABCD"[int(answer) - 1]
+    if answer not in ("A", "B", "C", "D"):
+        await safe_reply(update.message, "👉 Quiz चल रहा है। केवल A, B, C या D भेजें।\n🛑 रोकने के लिए /quizstop")
+        return True
+    q = session["questions"][session["index"]]
+    correct = answer == q["answer"]
+    if correct:
+        session["score"] += 1
+        feedback = "✅ सही उत्तर!"
+    else:
+        feedback = f"❌ गलत। सही उत्तर: {q['answer']}"
+    if q.get("explanation"):
+        feedback += f"\n💡 {q['explanation']}"
+    await safe_reply(update.message, feedback)
+    session["index"] += 1
+    if session["index"] >= len(session["questions"]):
+        total = len(session["questions"])
+        score = session["score"]
+        percentage = round((score / total) * 100)
+        result = (
+            "🏁 Quiz पूरा हुआ!\n\n"
+            f"📚 विषय: {session['topic']}\n"
+            f"🎯 Score: {score}/{total}\n"
+            f"📊 Percentage: {percentage}%\n\n"
+            "🌟 बहुत बढ़िया!" if percentage >= 80 else
+            "🏁 Quiz पूरा हुआ!\n\n"
+            f"📚 विषय: {session['topic']}\n"
+            f"🎯 Score: {score}/{total}\n"
+            f"📊 Percentage: {percentage}%\n\n"
+            "📖 थोड़ा और अभ्यास करें।"
+        )
+        del QUIZ_SESSIONS[chat_id]
+        await safe_reply(update.message, result)
+    else:
+        await send_quiz_question(update.message, session)
+    return True
 
 
 # =========================================================
@@ -561,14 +717,10 @@ async def handle_message(
     if not question:
         return
 
-    try:
-        await update.message.chat.send_action("typing")
-    except Exception:
-        pass
+    if await handle_quiz_answer(update):
+        return
 
-    answer = await ask_groq(question)
-
-    await send_long_reply(update.message, answer)
+    await handle_message_text(update, question)
 
 
 # =========================================================
@@ -637,13 +789,11 @@ def main():
         CommandHandler("help", help_command)
     )
 
-    application.add_handler(
-        CommandHandler("mcq", mcq_command)
-    )
-
-    application.add_handler(
-        CommandHandler("notes", notes_command)
-    )
+    # Optional shortcuts
+    application.add_handler(CommandHandler("mcq", mcq_command))
+    application.add_handler(CommandHandler("notes", notes_command))
+    application.add_handler(CommandHandler("quiz", quiz_command))
+    application.add_handler(CommandHandler("quizstop", quizstop_command))
 
     # Normal text messages
     application.add_handler(
